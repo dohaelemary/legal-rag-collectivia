@@ -2,8 +2,9 @@ import os
 from dotenv import load_dotenv
 
 load_dotenv()
+import streamlit as st
 
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY") or getattr(st, "secrets", {}).get("GEMINI_API_KEY")
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DATA_PATH = os.path.join(BASE_DIR, "data", "cleaned", "moroccan_law_paper.md")
 VECTOR_STORE_DIR = os.path.join(BASE_DIR, "vector_store")
