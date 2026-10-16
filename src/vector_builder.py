@@ -1,9 +1,12 @@
+import json
+import os
 import time
-from langchain_text_splitters import MarkdownHeaderTextSplitter, RecursiveCharacterTextSplitter
+from langchain_core.documents import Document
 from langchain_chroma import Chroma
 from langchain_google_genai import GoogleGenerativeAIEmbeddings
+
 from src.config import (
-    DATA_PATH, VECTOR_STORE_DIR, CHUNK_SIZE, CHUNK_OVERLAP,
+    VECTOR_STORE_DIR, 
     GEMINI_API_KEY, EMBEDDING_MODEL, COLLECTION_NAME,
 )
 
@@ -12,48 +15,64 @@ def get_embeddings():
         raise ValueError("GEMINI_API_KEY not found! Check your .env file.")
     return GoogleGenerativeAIEmbeddings(model=EMBEDDING_MODEL, google_api_key=GEMINI_API_KEY)
 
-def _open_store():
-    return Chroma(
+def build_or_get_vector_store():
+    store = Chroma(
         collection_name=COLLECTION_NAME,
         persist_directory=VECTOR_STORE_DIR,
         embedding_function=get_embeddings(),
     )
-
-def _load_chunks():
-    with open(DATA_PATH, "r", encoding="utf-8") as f:
-        markdown_text = f.read()
-    header_splitter = MarkdownHeaderTextSplitter(
-        headers_to_split_on=[("#", "Header 1"), ("##", "Header 2"), ("###", "Header 3")],
-        strip_headers=False,
-    )
-    sections = header_splitter.split_text(markdown_text)
-    splitter = RecursiveCharacterTextSplitter(chunk_size=CHUNK_SIZE, chunk_overlap=CHUNK_OVERLAP)
-    return splitter.split_documents(sections)
-
-def build_or_get_vector_store(force_rebuild: bool = False):
-    store = _open_store()
-    has_data = len(store.get(limit=1)["ids"]) > 0
     
-    if has_data and not force_rebuild:
-        print("Existing vector store found. Loading...")
+    documents = []
+    
+    # 1. المواد
+    articles_path = os.path.join("data", "cleaned", "egyptian_civil_code_articles2.json")
+    if os.path.exists(articles_path):
+        with open(articles_path, "r", encoding="utf-8") as f:
+            for item in json.load(f):
+                art_num = item.get("article", "")
+                art_text = item.get("context", "")
+                documents.append(Document(
+                    page_content=f"المادة {art_num}: {art_text}",
+                    metadata={"type": "article", "article_number": str(art_num)}
+                ))
+
+    # 2. الـ QA
+    qa_path = os.path.join("data", "cleaned", "egyptian_civil_qa_test.json")
+    if os.path.exists(qa_path):
+        with open(qa_path, "r", encoding="utf-8") as f:
+            for item in json.load(f):
+                q = item.get("question", item.get("q", ""))
+                a = item.get("answer", item.get("a", ""))
+                if q or a:
+                    documents.append(Document(
+                        page_content=f"سؤال قانوني: {q}\nالإجابة القانونية: {a}",
+                        metadata={"type": "qa"}
+                    ))
+
+    print(f"Total documents expected: {len(documents)}")
+    
+    existing_data = store.get()
+    existing_count = len(existing_data["ids"])
+    print(f"Already embedded and stored: {existing_count} documents.")
+
+    if existing_count >= len(documents):
+        print("Vector store is already fully complete!")
         return store
 
-    if has_data:
-        store.delete_collection()
-        store = _open_store()
+    remaining_docs = documents[existing_count:]
+    print(f"Resuming embedding for remaining {len(remaining_docs)} documents...")
 
-    chunks = _load_chunks()
-    print(f"Split into {len(chunks)} chunks. Embedding...")
-    
-    # إرسال 20 عنصر فقط في المرة بدلاً من 50 مع تأخير ثانيتين لمنع الـ Rate Limit
-    batch_size = 20
-    for i in range(0, len(chunks), batch_size):
-        store.add_documents(chunks[i:i + batch_size])
-        time.sleep(2)  # انتظر ثانيتين بين كل batch والآخر
-        
-    print("Vector store created successfully.")
+    batch_size = 5
+    for i in range(0, len(remaining_docs), batch_size):
+        batch = remaining_docs[i:i + batch_size]
+        store.add_documents(batch)
+        current_batch_num = (existing_count + i) // batch_size + 1
+        total_batches = (len(documents) + batch_size - 1) // batch_size
+        print(f"Uploaded batch {current_batch_num} / {total_batches}")
+        time.sleep(6)
+
+    print("Vector store updated and completed successfully!")
     return store
 
 if __name__ == "__main__":
-    build_or_get_vector_store(force_rebuild=True)
-    
+    build_or_get_vector_store()
